@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+
+{% block content %}
+  <textarea id="input-text" placeholder="Enter text to translate" rows="10" cols="80">{{ src_sentence }}</textarea>
+  <br>
+  <div id="editable" contenteditable="true" rows="10" cols="80"><span class="keep">{{ init_translation }}</span></div>
+  <br>
+  <button id="translate-btn" type="button">Translate</button>
+  <button id="submit-btn" type="button">Submit</button>
+  <span id="mtpe-span"><input type="checkbox" id="mtpe" value="false"><label for="mtpe">MTPE</label></span>
+  <br>
+  <br>
+  <button id="save-btn" type="button">Save</button>
+  <button id="export-btn" type="button">Export</button>
+{% endblock %}

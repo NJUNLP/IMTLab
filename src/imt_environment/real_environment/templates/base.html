@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>IMTLab</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" type="text/css">
+    <script src="{{ url_for('static', filename='target_area.js') }}"></script>
+  </head>
+  <body>
+    <h1>IMTLab</h1>
+    <form>
+      <div style="float: left">
+        <p>{{ src_lang }} &rarr; {{ tgt_lang }}</p>
+        <p>Source File: {{ src_path }}</p>
+        <p><progress id="progress-bar" value="{{ sample_id }}" max="{{ max_id }}"></progress> <span id="progress-value">{{ sample_id }}/{{ max_id }}</span></p>
+      </div>
+      <div class="label">
+        <p><span class="keep">Text</span>: text to keep </p>
+        <p><span class="match">Text</span>: matched constraint</p>
+        <p><span class="blank">&emsp;</span>: blank</p>
+      </div>
+      <br>
+      {% block content %}{% endblock %}
+      <div>
+        <p style="font-size: larger;">
+          Tips:<br>
+          <code>Enter</code>: Translate<br>
+          <code>Cmd/Ctrl + Enter</code>: Submit<br>
+          <code>Shift + space</code>: Replace the selected text as a blank / Insert a blank<br>
+          <code>Cmd/Ctrl + Backspace</code>: Delete the following text<br>
+          <code>Cmd/Ctrl + Shift + Backspace</code>: Replace the following text as a blank<br>
+          <code>Cmd/Ctrl + Z</code>: Undo<br>
+          <code>Cmd/Ctrl + Shift + Z</code>: Redo<br>
+        </p>
+      </div>
+    </form>
+
+
+    <script>
+      // Get the DOM elements
+      const inputText = document.getElementById('input-text');
+      const translateBtn = document.getElementById('translate-btn');
+      const submitBtn = document.getElementById('submit-btn');
+      const mtpeBox = document.getElementById('mtpe');
+      const exportBtn = document.getElementById('export-btn');
+      const saveBtn = document.getElementById('save-btn');
+
+      // Add event listeners to the buttons
+      translateBtn.addEventListener('click', translate);
+      submitBtn.addEventListener('click', submitTranslation);
+      mtpeBox.addEventListener('change', () => {
+        if (mtpeBox.checked) {
+          translateBtn.disabled = true;
+        } else {
+          translateBtn.disabled = false;
+        }
+      });
+      exportBtn.addEventListener('click', exportData);
+      saveBtn.addEventListener('click', saveCheckpoint);
+
+      document.addEventListener('DOMContentLoaded', function () {
+        editable = document.getElementById('editable');
+        operations.add({ type: "load", data: editable.textContent, position: 0, content: editable.innerHTML });
+        editable.addEventListener('keydown', keydown);
+        editable.addEventListener('beforeinput', beforeInput);
+        editable.addEventListener('input', inputContent, false);
+        editable.addEventListener("compositionend", function (e) {
+          const data = e.data;
+          const state = operations.get();
+          editable.innerHTML = state.content;
+          setCursorPosition(compositionPos);
+          const inputEvent = new InputEvent("beforeinput", {
+            inputType: 'insertText',
+            data: data,
+            isComposing: true,
+            cancelable: true
+          });
+          editable.dispatchEvent(inputEvent);
+          compositionPos = null;
+        });
+        editable.addEventListener('keydown', (event) => {
+          if (event.key === "Enter" && !compositionPos && !((isMac && event.metaKey) || (!isMac && event.ctrlKey)) && !event.altKey){
+            translateBtn.click();
+          } else if (event.key === "Enter" && !compositionPos && ((isMac && event.metaKey) || (!isMac && event.ctrlKey)) && !event.altKey){
+            submitBtn.click();
+          }
+        });
+      });
+
+      function getTemplate() {
+        if (operations.index < 0) {
+          return null;
+        } else if (operations.index === 0) {
+          let s = operations.stack[0].data;
+          return { revisedHypo: s, tags: new Array(s.length).fill(1) };
+        }
+        var template = operations.stack[0].data;
+        var templateMap = new Array(template.length);
+        for (let i = 0; i < templateMap.length; i++) {
+          templateMap[i] = i;
+        }
+        var tags = new Array(template.length).fill(1);
+        for (let i = 1; i <= operations.index; i++) {
+          const op = operations.stack[i];
+          console.log(op);
+          switch (op.type) {
+            case "insertChars": {
+              let insertPos;
+              if (op.position >= templateMap.length) {
+                const lastIndex = templateMap.length > 0 ? templateMap[templateMap.length - 1] : -1;
+                insertPos = typeof lastIndex === "number" ? lastIndex + 1 : lastIndex[1];
+              } else {
+                insertPos = typeof templateMap[op.position] === "number" ? templateMap[op.position] : templateMap[op.position][0];
+              }
+              template = template.slice(0, insertPos) + op.data + template.slice(insertPos);
+              let insertTag = new Array(op.length).fill(2);
+              tags.splice(insertPos, 0, ...insertTag);
+              let insertMap = new Array(op.length);
+              for (let i = 0; i < op.length; i++) {
+                insertMap[i] = insertPos + i;
+              }
+              templateMap.splice(op.position, 0, ...insertMap);
+              updateMap(templateMap, op.position + op.length, op.length);
+              break;
+            }
+            case "deleteChars":
+            case "deleteSpan": {
+              let p = op.position;
+              while (p < op.position + op.length) {
+                if (Array.isArray(templateMap[p])) {
+                  for (let j = templateMap[p][0]; j < templateMap[p][1]; j++) {
+                    tags[j] = 0;
+                  }
+                  p++;
+                } else {
+                  let spanTag = tags[templateMap[p]];
+                  let j = p + 1;
+                  while (j < op.position + op.length && typeof templateMap[j] === "number" && tags[templateMap[j]] === spanTag && templateMap[j] === templateMap[j - 1] + 1) {
+                    j++;
+                  }
+                  let posJ = j < templateMap.length ? templateMap[j] : templateMap[templateMap.length - 1] + 1;
+                  if (Array.isArray(posJ)) {
+                    posJ = posJ[0];
+                  }
+                  if (spanTag === 1) {
+                    for (let k = p; k < j; k++) {
+                      tags[templateMap[k]] = 0;
+                    }
+                  } else if (spanTag === 2 || spanTag === 3) {
+                    template = template.slice(0, templateMap[p]) + template.slice(posJ);
+                    tags.splice(templateMap[p], posJ - templateMap[p]);
+                    updateMap(templateMap, j, templateMap[p] - posJ);
+                  }
+                  p = j;
+                }
+              }
+              templateMap.splice(op.position, op.length);
+              break;
+            }
+            case "replaceChars": {
+              let startPos = typeof templateMap[op.position[0]] === "number" ? templateMap[op.position[0]] : templateMap[op.position[0]][0];
+              let endPos;
+              if (op.position[1] >= templateMap.length) {
+                const lastIndex = templateMap.length > 0 ? templateMap[templateMap.length - 1] : -1;
+                endPos = typeof lastIndex === "number" ? lastIndex + 1 : lastIndex[1];
+              } else {
+                endPos = typeof templateMap[op.position[1]] === "number" ? templateMap[op.position[1]] : templateMap[op.position[1]][0];
+              }
+              template = template.slice(0, startPos) + op.data + template.slice(endPos);
+              let insertTag = new Array(op.length).fill(3);
+              tags.splice(startPos, endPos - startPos, ...insertTag);
+              let insertMap = new Array(op.length);
+              for (let i = 0; i < op.length; i++) {
+                insertMap[i] = startPos + i;
+              }
+              templateMap.splice(op.position[0], op.position[1] - op.position[0], ...insertMap);
+              updateMap(templateMap, op.position[0] + op.length, op.position[0] - op.position[1] + op.length);
+              break;
+            }
+            case "replaceAsBlank": {
+              let p = op.position[0];
+              let startPos = typeof templateMap[op.position[0]] === "number" ? templateMap[op.position[0]] : templateMap[op.position[0]][0];
+              while (p < op.position[1]) {
+                if (Array.isArray(templateMap[p])) {
+                  p++;
+                } else {
+                  let spanTag = tags[templateMap[p]];
+                  let j = p + 1;
+                  while (j < op.position[1] && typeof templateMap[j] === "number" && tags[templateMap[j]] === spanTag && templateMap[j] === templateMap[j - 1] + 1) {
+                    j++;
+                  }
+                  let posJ = j < templateMap.length ? templateMap[j] : templateMap[templateMap.length - 1] + 1;
+                  if (Array.isArray(posJ)) {
+                    posJ = posJ[0];
+                  }
+                  if (spanTag === 1) {
+                    for (let k = p; k < j; k++) {
+                      tags[templateMap[k]] = 4;
+                    }
+                  } else if (spanTag === 2 || spanTag === 3) {
+                    template = template.slice(0, templateMap[p]) + template.slice(posJ);
+                    tags.splice(templateMap[p], posJ - templateMap[p]);
+                    updateMap(templateMap, j, templateMap[p] - posJ);
+                  }
+                  if (posJ > templateMap[j - 1] + 1) {
+                    for (let k = templateMap[j - 1] + 1; k < posJ; k++) {
+                      tags[k] = 4;
+                    }
+                  }
+                  p = j;
+                }
+              }
+              let endPos;
+              if (op.position[1] >= templateMap.length) {
+                const lastIndex = templateMap.length > 0 ? templateMap[templateMap.length - 1] : -1;
+                endPos = typeof lastIndex === "number" ? lastIndex + 1 : lastIndex[1];
+              } else {
+                endPos = typeof templateMap[op.position[1]] === "number" ? templateMap[op.position[1]] : templateMap[op.position[1]][0];
+              }
+              if (startPos === endPos) {
+                template = template.slice(0, startPos) + "\u2581*" + template.slice(startPos);
+                tags.splice(startPos, 0, 4, 4);
+                templateMap.splice(op.position[0], op.position[1] - op.position[0], [startPos, startPos + 2]);
+                updateMap(templateMap, op.position[0] + 1, 2);
+              } else {
+                templateMap.splice(op.position[0], op.position[1] - op.position[0], [startPos, endPos]);
+              }
+              if (op.data === '') {
+                if (op.position[0] < templateMap.length - 1 && Array.isArray(templateMap[op.position[0] + 1])) {
+                  templateMap[op.position[0]][1] = templateMap[op.position[0] + 1][1];
+                  templateMap.splice(op.position[0] + 1, 1);
+                }
+                if (op.position[0] > 0 && Array.isArray(templateMap[op.position[0] - 1])) {
+                  templateMap[op.position[0] - 1][1] = templateMap[op.position[0]][1];
+                  templateMap.splice(op.position[0], 1);
+                }
+              }
+              break;
+            }
+            case "insertBlank": {
+              let insertPos;
+              if (op.position >= templateMap.length) {
+                const lastIndex = templateMap.length > 0 ? templateMap[templateMap.length - 1] : -1;
+                insertPos = typeof lastIndex === "number" ? lastIndex + 1 : lastIndex[1];
+              } else {
+                insertPos = typeof templateMap[op.position] === "number" ? templateMap[op.position] : templateMap[op.position][0];
+              }
+              template = template.slice(0, insertPos) + "\u2581*" + template.slice(insertPos);
+              tags.splice(insertPos, 0, 4, 4);
+              templateMap.splice(op.position, 0, [insertPos, insertPos + 2]);
+              updateMap(templateMap, op.position + 1, 2);
+              break;
+            }
+          }
+          console.log(templateMap);
+          console.log(template);
+          console.log(tags);
+        }
+        return {revisedHypo: template, tags: tags};
+      }
+
+      function updateMap(templateMap, pos, offset) {
+        for (let i = pos; i < templateMap.length; i++) {
+          if (typeof templateMap[i] === "number") {
+            templateMap[i] += offset;
+          } else if (Array.isArray(templateMap[i])) {
+            templateMap[i][0] += offset;
+            templateMap[i][1] += offset;
+          }
+        }
+      }
+
+      function translate() {
+        // Get the input text and target language
+        const inputTextValue = inputText.value;
+        const template = getTemplate();
+
+        // Make a POST request to the Flask endpoint
+        const data = { input_text: inputTextValue, template: template };
+        console.log(data);
+        fetch('/translate', {
+          method: 'POST',
+          body: JSON.stringify(data),
+          headers: { 'Content-Type': 'application/json' },
+        })
+          .then(response => response.json())
+          .then(data => {
+            const translation = data.translated_text;
+            const constraintsPos = data.constraints_pos;
+
+            let s = "";
+            if (constraintsPos && constraintsPos.length > 0) {
+              let begin = 0;
+              let end = constraintsPos[0][0];
+              let i = 0;
+              while (i < constraintsPos.length) {
+                if (end > begin) {
+                  s += `<span class="keep">${translation.slice(begin, end)}</span>`;
+                }
+                s += `<span class="match">${translation.slice(constraintsPos[i][0], constraintsPos[i][1])}</span>`;
+                begin = constraintsPos[i][1];
+                if (i < constraintsPos.length - 1) {
+                  end = constraintsPos[i + 1][0];
+                } else {
+                  end = translation.length;
+                }
+                i++;
+              }
+              if (end > begin) {
+                s += `<span class="keep">${translation.slice(begin, end)}</span>`;
+              }
+            } else {
+              s = `<span class="keep">${translation}</span>`;
+            }
+            editable.innerHTML = s;
+            operations.clear();
+            operations.add({ type: "load", data: editable.textContent, position: 0, content: editable.innerHTML });
+          });
+      }
+
+      function submitTranslation() {
+        const template = getTemplate();
+        const result = {
+          translation: editable.textContent.trim(),
+          template: template,
+          success: !mtpeBox.checked
+        };
+        fetch('/', {
+          method: 'POST',
+          body: JSON.stringify(result),
+          headers: { 'Content-Type': 'application/json' },
+        })
+        .then(response => {
+          if (response.ok) {
+            return response.json();
+          } else {
+            console.log(response);
+          }
+        })
+        .then(
+          data => { location.replace(data.url); }
+        )
+        .catch(error => {
+          console.error(error);
+        });
+      }
+
+      function exportData() {
+        fetch('/export')
+        .then(response => {
+          if (response.ok) {
+            alert("Export done!");
+          } else {
+            alert("Export failed!");
+          }
+        })
+        .catch(error => { console.error(error); alert("Error!") });
+      }
+
+      function saveCheckpoint() {
+        fetch('/save')
+        .then(response => {
+          if (response.ok) {
+            alert("Save done!");
+          } else {
+            alert("Save failed!")
+          }
+        })
+        .catch(error => { console.error(error); alert("Error!") });
+      }
+    </script>
+  </body>
+</html>

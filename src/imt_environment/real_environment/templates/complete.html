@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+
+{% block content %}
+  <textarea id="input-text" placeholder="Enter text to translate" rows="10" cols="80" disabled></textarea>
+  <br>
+  <textarea id="editable" rows="10" cols="80" disabled></textarea>
+  <br>
+  <button id="translate-btn" type="button" disabled>Translate</button>
+  <button id="submit-btn" type="button" disabled>Submit</button>
+  <span id="mtpe-span"><input type="checkbox" id="mtpe" disabled><label for="mtpe">MTPE</label></span>
+  <br>
+  <br>
+  <button id="save-btn" type="button">Save</button>
+  <button id="export-btn" type="button">Export</button>
+  <p id="export-hint" style="color: red;">No more sentences to translate. You can export the results!</p>
+{% endblock %}
